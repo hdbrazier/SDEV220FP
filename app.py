@@ -1,13 +1,17 @@
-from flask import Flask, render_template, request, redirect, url_for, jsonify
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, session
 import psycopg2
 from database.pipeline import get_all_appointments
 from dotenv import load_dotenv
 import os
+from flask_bcrypt import Bcrypt
+from datetime import datetime
 
 load_dotenv()
 
 
 app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "dev_key_for_testing")
+bcrypt = Bcrypt(app)
 
 # Database connection setup
 conn = psycopg2.connect(
@@ -147,6 +151,74 @@ def update_appointment(appointment_id):
 @app.route('/thank_you')
 def thank_you():
     return render_template('thank_you.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['email']
+        password = request.form['password']
+        
+        # Check if user already exists
+        cur.execute("SELECT * FROM users WHERE username = %s", (username,))
+        if cur.fetchone() is not None:
+            flash('Username already registered. Please log in.', 'error')
+            return redirect(url_for('login'))
+        
+        # Hash password
+        password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+        
+        # Insert new user
+        try:
+            cur.execute("""
+                INSERT INTO users (username, password_hash, role, created_at)
+                VALUES (%s, %s, %s, %s)
+            """, (username, password_hash, 'user', datetime.now()))
+            conn.commit()
+            
+            flash('Registration successful! Please log in.', 'success')
+            return redirect(url_for('login'))
+        except Exception as e:
+            conn.rollback()
+            flash(f'Registration failed: {str(e)}', 'error')
+    
+    # GET request - render the registration form
+    return render_template('register.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['email']
+        password = request.form['password']
+        
+        # Check if user exists and password is correct
+        cur.execute("SELECT id, username, password_hash, role FROM users WHERE username = %s", (username,))
+        user = cur.fetchone()
+        
+        if user and bcrypt.check_password_hash(user[2], password):
+            # Store user info in session
+            session['user_id'] = user[0]
+            session['username'] = user[1]
+            session['role'] = user[3]
+            
+            flash('Login successful!', 'success')
+            
+            # Redirect to admin page if admin, otherwise to user page
+            if user[3] == 'admin':
+                return redirect(url_for('admin'))
+            else:
+                return redirect(url_for('index'))
+        else:
+            flash('Invalid username or password', 'error')
+    
+    # GET request - render the login form
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    # Clear session data
+    session.clear()
+    flash('You have been logged out', 'info')
+    return redirect(url_for('index'))
 
 if __name__ == '__main__':
     app.run(debug=True)
